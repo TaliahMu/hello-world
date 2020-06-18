@@ -1,0 +1,161 @@
+%{
+Short ImageNet Stimulus 
+-5000 unique images repeated once
+-10 repeats of 100 images (non-overlapping with previous set)
+each image presentation is 500ms, preceded by a
+blank period of 300-500ms duration (mean 400 ms)
+%}
+
+function imagenet
+
+control = stimulus.getControl;
+control.clearTrials()
+
+% Set some params
+image_duration = 0.5; % length of image presentation
+blank_min_duration = 0.3; % minimum amount of blanking
+blank_extra_duration = 0.2; % random amount of extra blanking
+
+% Select the of images we want to show
+album_key = fetch(imagenet.TargetAlbum);
+assert(length(album_key) == 1, 'imagenet.TargetAlbum should only have 1 target');
+
+% Get a random seed (same seed for the same collection)
+rng(album_key.collection_id)
+base_seed = randi(1e4);
+
+% Create conditions for single trial images and oracle images
+unique_hashes = make_image_frames(control, imagenet.AlbumSingle & album_key, ...
+    base_seed, image_duration, blank_min_duration, blank_extra_duration);
+oracle_hashes = make_image_frames(control, imagenet.AlbumOracle & album_key, ...
+    base_seed + 1, image_duration, blank_min_duration, blank_extra_duration);
+hashes = [repmat(oracle_hashes(:), 10, 1); unique_hashes(:)];
+
+% Shuffle conditions
+rng(base_seed + 2)
+hashes = hashes(randperm(end));
+disp 'Stimulus is configured'
+
+% Queue trials
+control.pushTrials(hashes)
+fprintf('Run duration %g seconds\n', control.totalDuration)
+
+control.clearCachedConditions() % clears unused conditions from memory
+end
+
+
+function hashes = make_image_frames(control, selection, seed, image_duration, min_gap, ...
+    rand_gap)
+% MAKE_IMAGE_FRAMES Creates Frame conditions for the selected images.
+
+% Set seed
+rng(seed);
+
+% Fetch image keys
+image_keys = fetch(selection, 'ORDER BY image_id');
+image_keys = image_keys(randperm(end)); % shuffle them
+
+% Create conditions
+params = rmfield(image_keys, 'collection_id');
+[params.presentation_time] = deal(image_duration);
+blank_durations = num2cell(min_gap + rand_gap * rand(length(image_keys), 1)); % needs to be cell array for assignment below
+[params.pre_blank_period] = blank_durations{:};
+hashes = control.makeConditions(stimulus.Frame, params, ...
+    'pre_blank_period + presentation_time');
+end
+
+%One hour monet with 30 min blanks at beginning and end for spontaneous activity recording
+
+%test with two minutes, then change to 1800 s for 30 min spontaneous activity
+blank_duration = 120;
+
+%m46
+
+% The m46 stimulus protocol includes only the oracle and the parametric clips
+% from the full Platinum experiment.  It has 1 hour of monet and 1 hour of trippy,
+% plus 6 minutes of oracle, for a total of 126 minutes.
+
+control = stimulus.getControl;
+control.clearTrials()
+
+% get episode specifiction
+episode_key = fetch(netflix.CurrentEpisode);
+
+rng('shuffle')  % random episode seed unlike platinum
+seed = randi(50);
+
+% create blocks for both runs
+monet_blocks = make_monet_blocks(control, seed + 1);
+oracle_blocks = make_oracle_blocks(control, episode_key, seed + 4);
+
+run1 = compile_run([monet_blocks], oracle_blocks, seed + 6);
+run2 = compile_run([monet_blocks], oracle_blocks, seed + 7);
+
+%%%%%%%%%%%%%%% Queue Trials %%%%%%%%%%%%%%%%%%%%%%%
+disp 'Stimulus is configured'
+control.pushTrials(cat(1,run1{:}))
+fprintf('Run 1 duration %g seconds\n', control.totalDuration)
+control.pushTrials(cat(1,run2{:}))
+fprintf('Total duration %g seconds\n', control.totalDuration)
+
+control.clearCachedConditions()  % clears unused conditions from memory
+
+
+
+
+
+function run = compile_run(parametrics, oracles, seed)
+% compile blocks into a run
+rng(seed)
+run = [parametrics oracles];
+run = run(randperm(end));
+end
+
+function blocks = make_monet_blocks(control, seed)
+clips_per_block = 4;
+
+cond.fps = control.screen.fps;
+assert(~isempty(cond.fps), 'FPS is not available. Please run stimulus.open')
+cond.duration = 15;
+rng(seed)
+cond.rng_seed = [1:60 randsample(10000, 60)'];
+cond.pattern_width = 72;
+cond.pattern_aspect = 1.7;
+cond.ori_coherence = 2.5;
+cond.ori_fraction = 1.0;
+cond.blue_green_saturation = 0;
+cond.temp_kernel = 'hamming';
+cond.temp_bandwidth = 4.0;
+cond.n_dirs = 16;
+cond.ori_mix = 1;
+cond.speed = 0.2;
+
+hashes = control.makeConditions(stimulus.Monet2, ...
+    stimulus.utils.factorize(cond), 'duration');
+blocks = make_blocks(hashes, clips_per_block, seed);
+end
+
+
+
+function blocks = make_oracle_blocks(control, episode_key, seed)
+nblocks = 5;  % per run
+cond = fetch(netflix.OracleSet & episode_key, ...
+    'ORDER BY movie_name, clip_number, skip_time');
+cond = rmfield(cond, 'season');
+fprintf('Oracle clips: %d\n', length(cond));
+hashes = control.makeConditions(stimulus.Clip, cond, 'cut_after');
+rng(seed)
+block = {hashes(randperm(end))};
+blocks = repmat(block, 1, nblocks);
+end
+
+
+
+function blocks = make_blocks(hashes, block_size, seed)
+% pack an array of hashes into array of blocks
+rng(seed)
+assert(mod(length(hashes), block_size) == 0, ...
+    'Block size must be a divisor of number of trials')
+blocks = mat2cell(reshape(hashes(randperm(end)), block_size, []), ...
+    block_size, ones(1,length(hashes)/block_size));
+end
