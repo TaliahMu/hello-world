@@ -2,7 +2,8 @@
 %test with two minutes of blanks and 1 full monet trial, then change to 1800 s for 30 min spontaneous activity
 
 
-% Monet without oracle and only 2 minutes long
+%%%%%%%%%%%%%%%%%%%%%%%%%%Monet without oracle and only 2 minutes long%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%CHANGE "cond.rng_seed = [1:2 randsample(10000, 2)'];" TO CHANGE LENGTH ---- 2=NUMBER OF MINUTES
 
 control = stimulus.getControl;
 control.clearTrials()
@@ -67,3 +68,174 @@ assert(mod(length(hashes), block_size) == 0, ...
 blocks = mat2cell(reshape(hashes(randperm(end)), block_size, []), ...
     block_size, ones(1,length(hashes)/block_size));
 end
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%WORKS%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%{
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%20 sec blank between each image%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%555
+%}
+
+function imagenet
+
+control = stimulus.getControl;
+control.clearTrials()
+
+% Set some params
+image_duration = 0.1; % length of image presentation
+blank_min_duration = 20; % minimum amount of blanking
+blank_extra_duration = 0.1; % random amount of extra blanking
+
+% Select the of images we want to show
+album_key = fetch(imagenet.TargetAlbum);
+assert(length(album_key) == 1, 'imagenet.TargetAlbum should only have 1 target');
+
+% Get a random seed (same seed for the same collection)
+rng(album_key.collection_id)
+base_seed = randi(1e4);
+
+% Create conditions for single trial images and oracle images
+unique_hashes = make_image_frames(control, imagenet.AlbumSingle & album_key, ...
+    base_seed, image_duration, blank_min_duration, blank_extra_duration);
+oracle_hashes = make_image_frames(control, imagenet.AlbumOracle & album_key, ...
+    base_seed + 1, image_duration, blank_min_duration, blank_extra_duration);
+hashes = [repmat(oracle_hashes(:), 10, 1); unique_hashes(:)];
+
+% Shuffle conditions
+rng(base_seed + 2)
+hashes = hashes(randperm(end));
+disp 'Stimulus is configured'
+
+% Queue trials
+control.pushTrials(hashes)
+fprintf('Run duration %g seconds\n', control.totalDuration)
+
+control.clearCachedConditions() % clears unused conditions from memory
+end
+
+
+function hashes = make_image_frames(control, selection, seed, image_duration, min_gap, ...
+    rand_gap)
+% MAKE_IMAGE_FRAMES Creates Frame conditions for the selected images.
+
+% Set seed
+rng(seed);
+
+% Fetch image keys
+image_keys = fetch(selection, 'ORDER BY image_id');
+image_keys = image_keys(randperm(end)); % shuffle them
+
+% Create conditions
+params = rmfield(image_keys, 'collection_id');
+[params.presentation_time] = deal(image_duration);
+blank_durations = num2cell(min_gap + rand_gap * rand(length(image_keys), 1)); % needs to be cell array for assignment below
+[params.pre_blank_period] = blank_durations{:};
+hashes = control.makeConditions(stimulus.Frame, params, ...
+    'pre_blank_period + presentation_time');
+end
+
+
+%%%%%%%%%%%%%%%%%%%%%tried replacing oracles from monet with blanks from mon calib didnt work%%%%%%%%%%%%%%%%%%%%
+
+control = stimulus.getControl;
+control.clearTrials()
+
+% get episode specifiction
+episode_key = fetch(netflix.CurrentEpisode);
+
+rng('shuffle')  % random episode seed unlike platinum
+seed = randi(50);
+
+% create blocks for both runs
+monet_blocks = make_monet_blocks(control, seed + 1);
+blank_blocks = make_blank_blocks(control, seed + 4)
+
+run1 = compile_run(blank_blocks, [monet_blocks], seed + 6);
+run2 = compile_run([monet_blocks], blank_blocks, seed + 7);
+
+%%%%%%%%%%%%%%% Queue Trials %%%%%%%%%%%%%%%%%%%%%%%
+disp 'Stimulus is configured'
+control.pushTrials(cat(1,run1{:}))
+fprintf('Run 1 duration %g seconds\n', control.totalDuration)
+control.pushTrials(cat(1,run2{:}))
+fprintf('Total duration %g seconds\n', control.totalDuration)
+
+control.clearCachedConditions()  % clears unused conditions from memory
+
+function run = compile_run(parametrics, blanks, seed)
+% compile blocks into a run
+rng(seed)
+run = [parametrics blanks];
+run = run(randperm(end));
+end
+
+function blocks = make_monet_blocks(control, seed)
+clips_per_block = 4;
+
+cond.fps = control.screen.fps;
+assert(~isempty(cond.fps), 'FPS is not available. Please run stimulus.open')
+cond.duration = 15;
+rng(seed)
+cond.rng_seed = [1:2 randsample(10000, 2)'];
+cond.pattern_width = 72;
+cond.pattern_aspect = 1.7;
+cond.ori_coherence = 2.5;
+cond.ori_fraction = 1.0;
+cond.blue_green_saturation = 0;
+cond.temp_kernel = 'hamming';
+cond.temp_bandwidth = 4.0;
+cond.n_dirs = 16;
+cond.ori_mix = 1;
+cond.speed = 0.2;
+
+hashes = control.makeConditions(stimulus.Monet2, ...
+    stimulus.utils.factorize(cond), 'duration');
+blocks = make_blocks(hashes, clips_per_block, seed);
+end
+
+function blocks = make_blank_blocks(control, seed)
+
+color_level = 2^8; % CHANGE BASED ON MAX BIT ON HARDWARE
+pixelValues = 0:(color_level-1);
+normalizedPixelValues = pixelValues/255;
+gammaValue = 1.0; % 2.21
+
+lookuptableValues = normalizedPixelValues.^gammaValue;
+
+%final_table = zeros(length(lookuptableValues),3);
+% final_table(:,2) = lookuptableValues;
+%final_table(:,2) = lookuptableValues;
+
+lookuptable = repmat(lookuptableValues',1,3);
+
+screen = stimulus.getScreen;
+%screen.setLUT(final_table)
+% lt1 = lookuptable(126,:) ;
+% lt2 = lookuptable(131,:) ;
+% av = (lt1+lt2)/3 ;
+% lookuptable(131,:) = lt2*0.95 ;
+screen.setLUT(lookuptable); % set our new LUT
+screen.applyLUT()
+
+control = stimulus.getControl;
+control.clearTrials()   % clear trial queue and cached conditions.
+
+cond.duration = 10;
+cond.level = 255;
+params = stimulus.utils.factorize(cond);
+
+% ramp without photodiode flips
+[params.show_flips] = deal(0);
+control.pushTrials(control.makeConditions(stimulus.Blank, params))
+control.clearCachedConditions()  % clears unused conditions from memory
+
+end
+
+function blocks = make_blocks(hashes, block_size, seed)
+% pack an array of hashes into array of blocks
+rng(seed)
+assert(mod(length(hashes), block_size) == 0, ...
+    'Block size must be a divisor of number of trials')
+blocks = mat2cell(reshape(hashes(randperm(end)), block_size, []), ...
+    block_size, ones(1,length(hashes)/block_size));
+end
+
